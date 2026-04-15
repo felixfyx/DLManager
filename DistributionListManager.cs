@@ -115,9 +115,9 @@ namespace DLManager
         private const int SaveDebounceMs   = 3_000; // write 3 s after the last change
 
         // XmlSerializer is expensive to construct — one static instance per root type.
-        private static readonly XmlSerializer Serializer = new(typeof(CacheFileDto));
+        private static readonly XmlSerializer Serializer = new XmlSerializer(typeof(CacheFileDto));
 
-        private static readonly XmlWriterSettings WriterSettings = new()
+        private static readonly XmlWriterSettings WriterSettings = new XmlWriterSettings()
         {
             Indent      = true,
             Encoding    = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false), // UTF-8, no BOM
@@ -146,7 +146,7 @@ namespace DLManager
             new ConcurrentDictionary<string, Lazy<Task<IReadOnlyList<MemberInfo>>>>(StringComparer.OrdinalIgnoreCase);
 
         // File I/O
-        private readonly SemaphoreSlim _fileLock  = new(1, 1);
+        private readonly SemaphoreSlim _fileLock  = new SemaphoreSlim(1, 1);
         private readonly Timer         _saveTimer;
         private volatile bool          _pendingSave;
 
@@ -409,8 +409,10 @@ namespace DLManager
                 CacheFileDto file;
                 try
                 {
-                    using var ms = new MemoryStream(xmlBytes);
-                    file = (CacheFileDto)Serializer.Deserialize(ms);
+                    using (var ms = new MemoryStream(xmlBytes))
+                    {
+                        file = (CacheFileDto)Serializer.Deserialize(ms);
+                    }
                 }
                 catch (Exception ex) // InvalidOperationException wraps XmlException on bad XML
                 {
@@ -437,14 +439,13 @@ namespace DLManager
 
                     if (dto.Members != null && !string.IsNullOrEmpty(dto.FetchedAt))
                     {
-                        entry.Members =
-                        [
-                            .. dto.Members.Select(m => new MemberInfo(
+                        entry.Members = dto.Members
+                            .Select(m => new MemberInfo(
                                 m.DisplayName ?? string.Empty,
                                 m.SmtpAddress ?? string.Empty,
                                 m.EntryId     ?? string.Empty,
-                                m.IsDistributionList)),
-                        ];
+                                m.IsDistributionList))
+                            .ToList();
 
                         entry.MembersFetchedAt = DateTime.Parse(
                             dto.FetchedAt,
@@ -484,16 +485,13 @@ namespace DLManager
                     FetchedAt   = e.MembersFetchedAt == default
                                       ? null
                                       : e.MembersFetchedAt.ToString("O", CultureInfo.InvariantCulture),
-                    Members     =
-                    [
-                        .. e.Members.Select(m => new MemberDto
-                        {
-                            DisplayName        = m.DisplayName,
-                            SmtpAddress        = m.SmtpAddress,
-                            EntryId            = m.EntryId,
-                            IsDistributionList = m.IsDistributionList,
-                        }),
-                    ],
+                    Members     = e.Members.Select(m => new MemberDto
+                    {
+                        DisplayName        = m.DisplayName,
+                        SmtpAddress        = m.SmtpAddress,
+                        EntryId            = m.EntryId,
+                        IsDistributionList = m.IsDistributionList,
+                    }).ToList(),
                 })
                 .ToList();
 
@@ -773,18 +771,22 @@ namespace DLManager
 
         private static async Task<byte[]> ReadBytesAsync(string path)
         {
-            using var fs = new FileStream(
-                path, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, useAsync: true);
-            var buffer = new byte[(int)fs.Length];
-            await fs.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false);
-            return buffer;
+            using (var fs = new FileStream(
+                path, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, useAsync: true))
+            {
+                var buffer = new byte[(int)fs.Length];
+                await fs.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false);
+                return buffer;
+            }
         }
 
         private static async Task WriteBytesAsync(string path, byte[] bytes)
         {
-            using var fs = new FileStream(
-                path, FileMode.Create, FileAccess.Write, FileShare.None, 4096, useAsync: true);
-            await fs.WriteAsync(bytes, 0, bytes.Length).ConfigureAwait(false);
+            using (var fs = new FileStream(
+                path, FileMode.Create, FileAccess.Write, FileShare.None, 4096, useAsync: true))
+            {
+                await fs.WriteAsync(bytes, 0, bytes.Length).ConfigureAwait(false);
+            }
         }
 
         private static void EnsureDirectory(string filePath)
@@ -853,14 +855,14 @@ namespace DLManager
     // =========================================================================
 
     [XmlRoot("dlCache")]
-    internal sealed class CacheFileDto
+    public sealed class CacheFileDto
     {
         [XmlAttribute("version")] public int                  Version { get; set; }
         [XmlAttribute("savedAt")] public string               SavedAt { get; set; }
         [XmlElement("entry")]     public List<CacheEntryDto>  Entries { get; set; }
     }
 
-    internal sealed class CacheEntryDto
+    public sealed class CacheEntryDto
     {
         [XmlAttribute("entryId")]     public string         EntryId     { get; set; }
         [XmlAttribute("displayName")] public string         DisplayName { get; set; }
@@ -870,7 +872,7 @@ namespace DLManager
         [XmlElement("member")]        public List<MemberDto> Members     { get; set; }
     }
 
-    internal sealed class MemberDto
+    public sealed class MemberDto
     {
         [XmlAttribute("displayName")] public string DisplayName        { get; set; }
         [XmlAttribute("smtpAddress")] public string SmtpAddress        { get; set; }
