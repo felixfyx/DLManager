@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using DLManager.Models;
 
@@ -14,30 +15,28 @@ namespace DLManager.Controllers
         {
             // Hardcoded default ABM path for loading
             defaultABMPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data", "addressbook.xml");
-            this.expiry = expiry ?? TimeSpan.FromMinutes(1); // Default expiry of 1 minute if not provided
+            this.expiry = expiry ?? TimeSpan.FromSeconds(30); // Default expiry of 1 minute if not provided
 
             // Check if we have an address book file to load
             if (File.Exists(defaultABMPath))
             {
                 Console.WriteLine($"Loading address book from {defaultABMPath}");
                 addressBook = FileUtils.LoadAddressBook(defaultABMPath);
-            }
-            else
-            {
-                // If no address book file exists, create a new one with default values
-                Console.WriteLine($"No address book found at {defaultABMPath}. Creating a new one.");
-                addressBook = new AddressBook();
-                FileUtils.SaveAddressBook(addressBook, defaultABMPath);
+
+                // If the address book was loaded successfully, invalidate expired distribution lists and return
+                if (addressBook != null)
+                {
+                    InvalidateExpiredDistributionLists();
+                    Console.WriteLine("Loaded address book successfully.");
+                    return;
+                }
             }
 
-            InvalidateExpiredDistributionLists();
+            // If no address book file exists / failed to load, create a new one with default values
+            Console.WriteLine($"Failed to load address book from {defaultABMPath}. Creating a new address book.");
+            addressBook = new AddressBook();
+            Save();
         }
-
-        /*
-        TODOS: 
-        - Is Contact Stale
-        - Invalidate expired contacts
-        */
 
         /// <summary>
         /// Save address book to the default path.
@@ -49,21 +48,86 @@ namespace DLManager.Controllers
 
         private bool IsDLStale(DistributionList distributionList)
         {
-            try
-            {
-                return (DateTime.Now - distributionList.CachedTime) > expiry;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error checking if distribution list is stale: {ex.Message}");
-                return true; // If there's an error, consider it stale
-            }
+            return (DateTime.Now - distributionList.CachedTime) > expiry;
         }
 
         // TODO: Add a function to process the whole recipient list
-        public void ProcessRecipientList()
+        public void ProcessRecipientList(List<Contact> recipients)
         {
-            throw new NotImplementedException("ProcessRecipientList is not implemented yet.");
+            foreach (var recipient in recipients)
+            {
+                if (recipient.IsDL)
+                {
+                    var dl = GetDistributionList(recipient.SmtpAddress);
+                    // If we didn't get any distribution list with the given SMTP address,
+                    // we can say that the DL was not saved in the address book so we should create a new entry.
+                    if (dl == null)
+                    {
+                        dl = recipient as DistributionList;
+                        ProcessDistributionList(dl);
+                    }
+                }
+                else
+                {
+                    Console.WriteLine($"Ignoring recipient {recipient.DisplayName} <{recipient.SmtpAddress}> as it is not a distribution list.");
+                }
+            }
+
+            Save(); // Save the address book
+        }
+
+        /// <summary>
+        /// Processes a distribution list and adds it to the address book if it doesn't already exist.
+        /// Skips processing if the distribution list already exists in the address book.
+        /// </summary>
+        /// <param name="distributionList"></param>
+        public void ProcessDistributionList(DistributionList distributionList)
+        {
+            // Check if the distribution list already exists in the address book
+            var currDL = GetDistributionList(distributionList.SmtpAddress);
+            Console.WriteLine($"Processing distribution list {distributionList.DisplayName} <{distributionList.SmtpAddress}>.");
+            if (currDL != null)
+            {
+                Console.WriteLine($"Distribution list {currDL.DisplayName} <{currDL.SmtpAddress}> already exists.");
+                return; // Distribution list already exists, skip processing
+            }
+            else
+            {
+                Console.WriteLine($"Adding new distribution list {distributionList.DisplayName} <{distributionList.SmtpAddress}> to the address book.");
+
+                // Create a new DL and add entry to the address book
+                currDL = new DistributionList(distributionList.DisplayName, distributionList.SmtpAddress, DateTime.Now);
+                AddDistributionList(currDL); // Add the new distribution list to the address book
+            }
+
+            // Process each contact in the distribution list.
+            foreach (var contact in distributionList.Contacts)
+            {
+                if (contact.IsDL)
+                {
+                    var dl = GetDistributionList(contact.SmtpAddress);
+                    // If we didn't get any distribution list with the given SMTP address,
+                    // we can say that the DL was not saved in the address book so we should create a new entry.
+                    if (dl == null)
+                    {
+                        dl = contact as DistributionList;
+                        Console.WriteLine($"Processing nested distribution list {dl.DisplayName} <{dl.SmtpAddress}>.");
+                        ProcessDistributionList(dl);
+                    }
+                }
+
+                AddContactToDistributionList(currDL, contact);
+            }
+        }
+
+        public void AddContactToDistributionList(DistributionList distributionList, Contact contact)
+        {
+            if (contact.IsDL)
+            {
+                contact = new Contact(contact.DisplayName, contact.SmtpAddress, true);
+            }
+
+            distributionList.AddContact(contact);
         }
 
         /// <summary>

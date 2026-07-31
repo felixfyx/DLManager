@@ -6,7 +6,8 @@ namespace DLManager.Models
 {
     public class DistributionList : Contact
     {
-        [XmlElement("Contacts")]
+        [XmlArray("Contacts")]
+        [XmlArrayItem("Contact")]
         public List<Contact> Contacts { get; set; } = new List<Contact>();
 
         [XmlElement("CachedTime")]
@@ -30,11 +31,13 @@ namespace DLManager.Models
                 return;
             }
 
+            /*
             // Flatten DL and then process it at the to level of the address book.
             if (contact.IsDL)
             {
                 contact = new Contact(contact.DisplayName, contact.SmtpAddress, true);
             }
+            */
 
             Contacts.Add(contact);
         }
